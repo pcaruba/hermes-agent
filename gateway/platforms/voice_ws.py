@@ -275,33 +275,34 @@ class VoiceSession:
                 return
             await self.send_state("speaking", turn_id=turn_id)
             with tempfile.TemporaryDirectory(prefix="hermes-voice-tts-") as tmp:
-                requested = str(Path(tmp) / "sentence.wav")
+                wav_in = str(Path(tmp) / "sentence-tts.wav")
+                wav_out = str(Path(tmp) / "sentence-pcm.wav")
                 from tools.tts_tool import text_to_speech_tool
-                raw = await asyncio.to_thread(text_to_speech_tool, sentence, requested)
+                raw = await asyncio.to_thread(text_to_speech_tool, sentence, wav_in)
                 result = json.loads(raw)
                 if not result.get("success"):
                     raise RuntimeError(result.get("error") or "TTS failed")
-                source = Path(result.get("file_path") or requested)
-                opus = Path(tmp) / "sentence.ogg"
+                source = Path(result.get("file_path") or wav_in)
                 proc = await asyncio.create_subprocess_exec(
                     "ffmpeg", "-loglevel", "error", "-y", "-i", str(source),
-                    "-c:a", "libopus", "-application", "voip", "-b:a", "32k",
-                    "-frame_duration", "20", str(opus),
+                    "-f", "wav", "-acodec", "pcm_s16le", "-ac", "1", "-ar", "16000",
+                    wav_out,
                     stdout=asyncio.subprocess.DEVNULL,
                     stderr=asyncio.subprocess.PIPE,
                 )
                 _out, err = await proc.communicate()
                 if proc.returncode != 0:
-                    raise RuntimeError(f"Opus conversion failed: {err.decode(errors='replace')[:200]}")
-                payload = opus.read_bytes()
+                    raise RuntimeError(f"PCM conversion failed: {err.decode(errors='replace')[:200]}")
+                pcm = Path(wav_out).read_bytes()
             if turn_id in self._cancelled_turns:
                 return
             await self.send_json(
                 "tts_audio_meta", turn_id=turn_id, sentence_index=index,
-                codec="opus", container="ogg", text=sentence,
+                codec="pcm_s16le", container="raw", text=sentence,
+                sample_rate=16000, channels=1,
             )
             async with self._send_lock:
-                await self.ws.send_bytes(payload)
+                await self.ws.send_bytes(pcm)
 
     @staticmethod
     def _transcribe_pcm(pcm: bytes) -> str:
