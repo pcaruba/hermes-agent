@@ -4881,6 +4881,14 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
             self._app.router.add_post("/v1/runs/{run_id}/approval", self._handle_run_approval)
             self._app.router.add_post("/v1/runs/{run_id}/stop", self._handle_stop_run)
+            # Persistent, full-duplex Android voice channel. It shares this
+            # listener and Bearer auth boundary; binary client frames are
+            # PCM16 mic audio and binary server frames are Ogg/Opus TTS.
+            from gateway.platforms.voice_ws import handle_voice_websocket
+            self._app.router.add_get(
+                "/v1/voice/ws",
+                lambda request: handle_voice_websocket(request, self),
+            )
             # Store the adapter after native routes are registered. Local Hermes-Relay
             # bootstrap shims use this key as a feature-detection hook; registering
             # native routes first lets those shims no-op instead of shadowing the
