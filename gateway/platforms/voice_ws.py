@@ -22,7 +22,23 @@ import wave
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
-logger = logging.getLogger(__name__)
+import logging
+
+logger = logging.getLogger("voice_ws")
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] voice_ws: %(message)s"))
+    logger.addHandler(handler)
+logger.setLevel(logging.INFO)
+logger.propagate = False
+
+import math
+import re
+import struct
+import tempfile
+import time
+import uuid
+import wave
 
 VOICE_SAMPLE_RATE = 16_000
 VOICE_CHANNELS = 1
@@ -296,11 +312,21 @@ class VoiceSession:
                 wav.setsampwidth(VOICE_SAMPLE_WIDTH)
                 wav.setframerate(VOICE_SAMPLE_RATE)
                 wav.writeframes(pcm)
-            from tools.transcription_tools import transcribe_audio
-            result = transcribe_audio(str(wav_path))
+            try:
+                from tools.transcription_tools import transcribe_audio
+                result = transcribe_audio(str(wav_path))
+            except Exception as exc:
+                logger.exception("voice STT tool raised: %s", exc)
+                raise
             if not result.get("success"):
+                logger.warning(
+                    "voice STT returned no_speech file=%s error=%s wav_bytes=%d",
+                    wav_path, result.get("error"), len(pcm),
+                )
                 raise RuntimeError(result.get("error") or "STT failed")
-            return str(result.get("transcript") or "").strip()
+            text = str(result.get("transcript") or "").strip()
+            logger.info("voice STT result chars=%d preview=%r", len(text), text[:80])
+            return text
 
 
 async def handle_voice_websocket(request: Any, adapter: Any) -> Any:
