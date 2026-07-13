@@ -35,6 +35,7 @@ class _FakeWs:
     def __init__(self):
         self.text = []
         self.binary = []
+        self.closed = False
 
     async def send_str(self, value):
         self.text.append(value)

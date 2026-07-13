@@ -93,9 +93,12 @@ class VoiceSession:
         self._send_lock = asyncio.Lock()
 
     async def send_json(self, frame_type: str, **payload: Any) -> None:
+        if self.ws.closed:
+            return
         frame = {"type": frame_type, "session_id": self.session_id, **payload}
         async with self._send_lock:
-            await self.ws.send_str(json.dumps(frame, ensure_ascii=False))
+            if not self.ws.closed:
+                await self.ws.send_str(json.dumps(frame, ensure_ascii=False))
 
     async def send_state(self, state: str, *, turn_id: str = "") -> None:
         await self.send_json("state", state=state, turn_id=turn_id or self.turn_id)
@@ -103,6 +106,8 @@ class VoiceSession:
     async def accept_audio(self, data: bytes) -> None:
         if not data:
             return
+        if not self.audio:
+            logger.info("voice audio started session=%s bytes=%d", self.session_id, len(data))
         if len(self.audio) + len(data) > MAX_UTTERANCE_BYTES:
             raise VoiceProtocolError("utterance exceeds 60 second limit")
         self.audio.extend(data)
@@ -115,10 +120,18 @@ class VoiceSession:
         pcm = bytes(self.audio)
         self.audio.clear()
         self.turn_id = f"turn_{uuid.uuid4().hex}"
+        logger.info(
+            "voice audio committed session=%s turn=%s bytes=%d duration_ms=%d rms=%.4f",
+            self.session_id,
+            self.turn_id,
+            len(pcm),
+            int(len(pcm) / (VOICE_SAMPLE_RATE * VOICE_SAMPLE_WIDTH) * 1000),
+            rms_amplitude(pcm),
+        )
         self._cancelled_turns.discard(self.turn_id)
         self._turn_task = asyncio.create_task(self._process_turn(pcm, self.turn_id))
 
-    async def barge_in(self) -> None:
+    async def barge_in(self, *, acknowledge: bool = True) -> None:
         turn = self.turn_id
         if turn:
             self._cancelled_turns.add(turn)
@@ -132,11 +145,12 @@ class VoiceSession:
             task.cancel()
         self._tts_tasks.clear()
         self.audio.clear()
-        await self.send_json("barge_in_ack", turn_id=turn)
-        await self.send_state("listening", turn_id=turn)
+        if acknowledge and not self.ws.closed:
+            await self.send_json("barge_in_ack", turn_id=turn)
+            await self.send_state("listening", turn_id=turn)
 
     async def close(self) -> None:
-        await self.barge_in()
+        await self.barge_in(acknowledge=False)
         if self._turn_task and not self._turn_task.done():
             self._turn_task.cancel()
             try:
@@ -148,6 +162,10 @@ class VoiceSession:
         try:
             await self.send_state("thinking", turn_id=turn_id)
             transcript = await asyncio.to_thread(self._transcribe_pcm, pcm)
+            logger.info(
+                "voice transcription complete session=%s turn=%s chars=%d",
+                self.session_id, turn_id, len(transcript),
+            )
             if turn_id in self._cancelled_turns:
                 return
             if not transcript:
